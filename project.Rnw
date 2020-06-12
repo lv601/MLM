@@ -1,0 +1,456 @@
+\documentclass[a4paper]{article}
+
+\title{machine learning project}
+\author{Buchner, Bindeus, Gollobich, Tomaselli}
+
+\begin{document}
+\SweaveOpts{concordance=TRUE}
+
+\maketitle
+
+
+\newpage
+<<>>=
+#install.packages("DMwR2")
+library(nnet)
+#library(e1071)
+library(ALL)
+library(Biobase)
+library(hgu95av2.db)
+library(limma)
+library(genefilter)
+library(ggplot2)
+library(randomForest)
+library(tidyr)
+library(dplyr)
+library(Hmisc)
+library(rpart)
+#source("https://bioconductor.org/biocLite.R")
+#biocLite("gcrma")
+library(gcrma)
+data(ALL)
+@
+
+\newpage
+
+
+
+2 Preliminaries\newline
+Exercise 1\newline
+
+How many patients are in the study, what is their sex, age, stage of the disease?
+\newline
+
+How many Patients:
+<<>>=
+sum(table(ALL$cod))
+@
+
+Sex of Patients:
+<<>>=
+table(ALL$sex)
+@
+
+Age of Patient:
+<<>>=
+table(ALL$sex, ALL$age)
+@
+\begin{center}
+<<fig=TRUE,echo=TRUE>>=
+boxplot(ALL$age)
+@
+\end{center}
+
+\newpage
+Stage of the disease of the patients:
+<<>>=
+table(ALL$citog)
+@
+
+
+\newpage
+Describe the ALL dataset using the accessor functions of class ExpressionSet.\newline
+<<>>=
+experimentData(ALL)
+head(pData(ALL))
+@
+
+\newpage
+<<>>=
+pD <- phenoData(ALL)
+varMetadata(pD)
+varLabels(pD)
+@
+
+
+Application to the Chiaretti (2004) data. With respect to
+the ALL data we want to predict from the gene expressions the diagnosis of B-
+cell State B1, B2, and B3. Since the complete set of 12625 gene expressions is
+too large, we select the genes with di®erent means over the patients groups. It
+is obvious that only these gene can contribute to the prediction of the disease
+states. In particular we select the gene with ANOVA p-value is smaller than
+0.000001.
+<<>>=
+ALLB123 <- ALL[,ALL$BT %in% c("B1","B2","B3")]
+pano <- apply(exprs(ALLB123), 1, function(x) anova(lm(x ~ ALLB123$BT))$Pr[1])
+names <- featureNames(ALL)[pano<0.000001]
+symb <- mget(names, env = hgu95av2SYMBOL)
+ALLBTnames <- ALLB123[names, ]
+probedat <- as.matrix(exprs(ALLBTnames))
+row.names(probedat)<-unlist(symb)
+@
+
+
+\newpage
+Is there a significant difference in age between men and women?
+\begin{center}
+<<fig=TRUE,echo=TRUE>>=
+plot(ALL$sex, ALL$age)
+@
+\end{center}
+
+\newpage
+How many individuals have B-cell ALL, how many T-cell ALL?
+<<>>=
+table(ALL$BT)
+@
+\begin{center}
+<<fig=TRUE,echo=TRUE>>=
+plot(ALL$BT)
+@
+\end{center}
+
+What are the different assigned molecular biology classes of the cancer?
+<<>>=
+table(ALL$mol.biol)
+@
+
+
+\newpage
+3 Data transformation\newline
+Exercise 2\newline
+
+
+For classifcation reduce the data to B-cell ALL (i.e., remove all individuals with T-cell ALL).
+<<>>=
+table(ALL$BT)
+tgt.cases <- which(ALL$BT %in% levels(ALL$BT)[1:5])
+ALLb <- ALL[,tgt.cases]
+table(ALLb$BT)
+table(ALLb$mol.biol)
+sum(table(ALLb$BT))
+ALLb
+@
+
+
+\newpage
+Comparison of BCR/ABL and NEG.
+<<>>=
+table(ALL$mol.biol)
+table(ALLb$mol.biol)
+@
+
+BCR/ABL and NEG Samples in ALL dataset.
+<<>>=
+bio <- which(ALL$mol.biol %in% c("BCR/ABL","NEG"))
+biomol <- ALL[,bio]
+table(biomol$mol.biol)
+@
+
+BCR/ABL and NEG Samples in B-cell ALL dataset.
+<<>>=
+biob <- which(ALLb$mol.biol %in% c("BCR/ABL","NEG"))
+biomolb <- ALL[,biob]
+table(biomolb$mol.biol)
+@
+
+
+
+\newpage
+Normalization: GCRMA??\newline
+
+
+Apply a non-specifc filtering step to remove those genes which show low values of 
+expression (e.g., intensities above 200 in at least 25% of the samples) or which show little
+variation across samples (e.g., interquartile range across samples larger than 0.5). Note
+that the non-specifc filtering step does not select genes with respect to their ability to
+classify any particular set of samples.
+<<>>=
+sel1 <- grep("^B", as.character(ALL$BT))
+sel2 <- which(as.character(ALL$mol) %in% c("BCR/ABL", "NEG"))
+eset <- ALL[, intersect(sel1, sel2)]
+@
+
+
+<<>>=
+f1 <- pOverA(0.25, log2(200))
+f2 <- function(x) (IQR(x) > 0.5)
+ff <- filterfun(f1, f2)
+selected <- genefilter(eset, ff)
+sum(selected)
+esetSub <- eset[selected, ]
+@
+
+
+\newpage
+4 Differential Expression\newline
+Exercise 3\newline
+
+
+Perform differential expression analysis by calculating the differential expression estimates \newline
+between the BCR/ABL and NEG group using the limma package. Give a list of\newline
+the top 50 differentially expressed genes.\newline
+
+Differential Expression Limma\newline
+\newline
+
+
+<<>>=
+strain <- c("NEG", "NEG", "NEG", "NEG", "BCR/ABL","BCR/ABL", "BCR/ABL", "BCR/ABL")
+design <- model.matrix(~ factor(strain))
+colnames(design) <- c("NEG", "BCR/ABL")
+groupsize <- 4
+g1 <- sample(which(esetSub$mol.biol == "NEG"), groupsize)
+g2 <- sample(which(esetSub$mol.biol == "BCR/ABL"), groupsize)
+subset <- c(g1, g2)
+fit <- lmFit(exprs(esetSub)[, subset], design)
+fit <- eBayes(fit)
+@
+
+<<>>=
+diff <- topTable(fit, coef = 2, n = 50, adjust = "fdr")
+diff[1:10,]
+@
+
+<<>>=
+apply(fit$coef, 2, function(x)
+table(abs(x)>1))
+@
+
+
+\newpage
+5 Classifcation\newline
+
+
+Set up a response variable Y and explanatory variables (genes) X and the dataframe which can be used for classifcation:\newline
+
+<<>>=
+Y <- factor(esetSub$mol.biol)
+table(Y)
+Y
+X <- t(exprs(esetSub))
+df <- data.frame(Y=Y, X=X)
+@
+## tr <- rpart(Y ~ ., data = df)
+
+So, let us randomly divide the data into two groups, \newline
+so that we can use them for test and training purposes.\newline
+<<>>=
+a1 = which(as.character(Y) == "NEG")
+a2 = which(as.character(Y) == "BCR/ABL")
+set.seed(100)
+sub1N = sample(a1, 21)
+sub1B = sample(a2, 19)
+sub2N = a1[!(a1 %in% sub1N)]
+sub2B = a2[!(a2 %in% sub1B)]
+testSet = esetSub[, c(sub1N, sub1B)]
+testY = Y[c(sub1N, sub1B)]
+trainSet = esetSub[, c(sub2N, sub2B)]
+trainY = Y[c(sub2N, sub2B)]
+@
+
+
+Exercise 4\newline
+Write a function that will create a data set divided into two groups at a given proportion\newline
+(e.g. 75 percent training and 25 percent test set).\newline
+It should take an exprSet object and the name of a two class variable\newline
+in its pData slot on which to balance.\newline
+
+
+
+<<>>=
+smp_size <- floor(0.75 * nrow(esetSub))
+train_ind <- sample(seq_len(nrow(esetSub)), size = smp_size)
+train <- esetSub[train_ind, ]
+test <- esetSub[-train_ind, ]
+@
+
+Choose two machine learning methods to find a good classifer to divide the patients\newline
+into BCR/ABL and NEG, e.g., two of the following:\newline
+
+
+
+\newpage
+5.1 Recursive Partitioning\newline
+Exercise 5\newline
+
+1. Fit a reproducible classifcation tree model to the training set using rpart. Assess the fit of that model.\newline
+The tree is built using the training set, the performance is evaluated
+(and the prediction error is calculated) using the test set.
+This procedure is repeated a predefined number of times. And finally,
+the average error rate is calculated.
+
+Overfitting needs to be avoided
+<<>>=
+tree_model <- rpart(Y ~ ., data = train)
+plotcp(tree_model)
+tree_model
+summary(tree_model)
+
+m <- rpart(col~.,data = train, method="class", control=rpart.control(minsplit=3,minbucket=1))
+printcp(m)
+m <- prune(m, cp=0.1)
+@
+
+
+2. Now apply the model to your test data set. What is the missclassifcation rate?\newline
+<<>>=
+pred_rpart <- predict(tree_model, newdata = test, type = "class")
+mc(pred_rpart)
+@
+
+
+3. Carry out a different split of your data into test and training sets and repeat.\newline
+<<>>=
+smp_size <- floor(0.65 * nrow(esetSub))
+train_ind <- sample(seq_len(nrow(esetSub)), size = smp_size)
+train <- esetSub[train_ind, ]
+test <- esetSub[-train_ind, ]
+
+tree_model <- rpart(Y ~ ., data = train)
+
+pred_rpart <- predict(tree_model, newdata = test, type = "class")
+mc(pred_rpart)
+@
+
+
+\newpage
+
+5.2 Random Forests\newline
+Basic use of the random forest technology is fairly straightforward. The only parameter that\newline
+seems to be very important is mtry. This controls the number of features that are selected for\newline
+each split. The default value is the square root of the number of features but often a smaller\newline
+value tends to have better performance.\newline
+\newline
+
+
+
+In many statistical methods only complete data sets without missing
+values can be used.
+Now the data is ramdonly split into a training set (pid_learn) and a
+test set (pid_test).
+<<>>=
+pid <- PimaIndiansDiabetes[,-c(4,5)]
+pid <- pid[complete.cases(pid),]
+
+set.seed(20170214)
+pid_index <- sample(1:nrow(pid))
+pid_learn <- pid[pid_index[1:500],]
+pid_test <- pid[pid_index[-(1:500)],]
+pred_true <- pid_test$diabetes
+pid_test <- pid_test[,-7]
+
+set.seed(20170214)
+pid_rpart <- rpart(diabetes ~ ., data = pid_learn)
+plot(pid_rpart, uniform = TRUE)
+text(pid_rpart)
+pid_rpart$cptable
+pid_rpart <- prune(pid_rpart, cp = 0.018)
+plot(pid_rpart, uniform = TRUE)
+text(pid_rpart)
+pred_rpart <- predict(pid_rpart, newdata = pid_test,type = "class")
+mc(pred_rpart)
+@
+
+Exercise 6
+* Fit a random forest to the training data. Set the number of trees to grow to 5000.
+* Now apply the model to your test dataset. What is the missclassifcation rate?\newline
+
+<<>>=
+set.seed(20170214)
+pid_rf <- randomForest(diabetes ~ ., data = pid_learn, mtry = 3, ntree = 100, importance = TRUE,keep.forest = TRUE)
+pred_rf <- predict(pid_rf, newdata = pid_test)
+mc(pred_rf); mc(pred_rf)$rate
+plot(pid_rf, log="y",lty=1)
+@
+
+
+
+
+* Tune mtry using different values.\newline
+
+
+* Compare the feature selection of random forests (importance=TRUE) to the differentially\newline
+expressed genes selected by linear models.\newline
+
+
+\newline
+
+
+
+
+
+
+
+
+
+\newpage
+5.3 Neural network\newline
+Unfortunately, we cannot use all the genes as inputs to the current nnet implementation, at\newline
+least on a modestly endowed machine.\newline
+\newline
+
+<<>>=
+set.seed(20110319)
+pid_scale <- scale(pid[,-7])
+pid_learn2 <- data.frame(pid_scale,diabetes = pid[,7])
+tune_nnet <- tune.nnet(diabetes ~ ., data = pid_learn2,
+size = 1:10, maxit = 1000)
+tune_nnet
+
+pid_nnet <- nnet(diabetes ~ ., data = pid_learn2,
+maxit = 1000, size = 2)
+pred_nnet <- predict(pid_nnet,
+newdata = scale(pid_test, attr(pid_scale, "scaled:center"),
+attr(pid_scale, "scaled:scale")),
+type = "class")
+mc(pred_nnet)
+@
+Exercise 7\newline
+* Use a randomly reduced set of 50 genes to fit a neural network to the training dataset.\newline
+* Tune the size of the network using tune.nnet from e1071. If necessary also modify the\newline
+  weight decay (e.g., to 0.01) or increase the maximum allowed number of weights.\newline
+* Now apply the model to your test dataset. What is the missclassifcation rate?\newline
+* Finally use the set of 50 most differentially expressed genes found by limma to fit the\newline
+  model to the training data, apply the model to your test dataset. What is the missclas-\newline
+  sifcation rate?\newline
+
+
+
+
+\newpage
+5.4 Support Vector Machines\newline
+Exercise 8\newline
+<<>>=
+set.seed(20110319)
+tune_svm <- tune.svm(diabetes ~ ., data = pid_learn,
+gamma = 2^(-7:-2), cost = 2^(-1:1))
+tune_svm
+
+pid_svm <- svm(diabetes ~ ., data = pid_learn,
+gamma = 0.0078, cost = 2)
+pred_svm <- predict(pid_svm, newdata = pid_test)
+mc(pred_svm)
+@
+
+
+* Fit a svm to the training data set by using a linear kernel. Tune gamma around the default\newline
+value 1=ncol(x) using function tune.svm.\newline
+* Now apply the model to your test dataset. What is the missclassifcation rate?\newline
+<<>>=
+set.seed(20110319)
+
+@
+
+
+\end{document}
